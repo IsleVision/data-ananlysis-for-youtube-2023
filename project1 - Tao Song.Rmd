@@ -1,0 +1,474 @@
+---
+title: "Data Analysis - Project 1"
+author: "Tao SONG (23634999)"
+student number: "23634999"
+video link: "https://youtu.be/vCzrCaLwht0"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    df_print: paged
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: sentence
+runtime: shiny
+---
+
+### Introduction
+
+The data source is from Kaggle <https://www.kaggle.com/datasets/nelgiriyewithana/global-youtube-statistics-2023>
+
+The data source, Global YouTube Statistics 2023, provides all-round information of the top 1000 most subscribed YouTubers.  
+Now, follow my steps to explore more insights into this data source.  
+You may also watch this introductory video (<https://youtu.be/vCzrCaLwht0>) to help you go through the document. 
+
+### Data and libraries set up
+
+Load the data source and required libraries that this project relies on.
+
+```{r, warning=FALSE, message=FALSE}
+youtube_2023data <- read.csv("./youtube_UTF_8.csv")
+library(knitr)
+library(shiny)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(WVPlots)
+```
+
+We can utilize summary, head, and str functions to overview the basic info of the data.
+In total, there are 995 pieces of data, each having 28 variables.
+
+```{r, echo=TRUE, results='hide'}
+summary(youtube_2023data)
+head(youtube_2023data)
+```
+
+```{r}
+str(youtube_2023data)
+```
+
+### Data transformation
+
+We will perform some transformations to make the data clean, legal, and well-structured.
+First, we can see the created date of each channel is separated into three parts, year, month, and day, which is not convenient for later processing.  We can merge them into a single Date object and create a new column called created_full_date to store it.  
+YouTube was launched on Feb.14, 2005, for any created_full_date earlier than that date is certainly an invalid date. We set these invalid dates to NA. In fact, only one date, 1970-1-1, is spotted, which equals to the starting Unix epoch time.  
+The column, "Gross.tertiary.education.enrollment....", does not have a proper column name and has some weird trailing dots, we change it to 'Gross.tertiary.education.enrollment.percentage'(we know it's 'percentage' by viewing the raw data title).Also, the value in this column should not exceed 100; for those do exceed (9 items spotted), mark them as NA.
+
+```{r, echo=TRUE, results='hide'}
+Sys.setlocale("LC_TIME", "C")
+attach(youtube_2023data)
+# The 'format' function is added to avoid R transforming Date object to number(number of days from epoch time 1970-01-01)
+created_full_date <- format(as.Date(
+    paste0(created_year, '-', created_month, '-', created_date),
+    "%Y-%b-%d"
+  ))
+detach(youtube_2023data)
+
+table(youtube_2023data$created_full_date < as.Date("2005-2-14"))
+table(youtube_2023data$Gross.tertiary.education.enrollment.... > 100)
+youtube_2023data <- youtube_2023data %>%
+  rename("Gross.tertiary.education.enrollment.percentage" = "Gross.tertiary.education.enrollment....") %>%
+  mutate(created_full_date = ifelse(
+    as.Date(created_full_date) < as.Date("2005-2-14"),
+    NA,
+    created_full_date
+  )) %>%
+  mutate(
+    Gross.tertiary.education.enrollment.percentage = ifelse(
+      Gross.tertiary.education.enrollment.percentage > 100,
+      NA,
+      Gross.tertiary.education.enrollment.percentage
+    )
+  )
+```
+
+Next, we are curious about how many NA (not available) are there in the data source.
+We will inspect NA by rows and by columns respectively.  
+We can use is.na function to spot out NA in numeric columns, but for NAN existing as character, is.na function is not able to pick them up, therefore, we should add a character comparing judgment criterion as shown below.  
+As statistics show, there are 444 rows having NA; the highest NA number is 17 in a row.
+There are also 19 columns having NA, with the highest NA number 337 in the column, subscribers_for_last_30_days.  
+We won't set these NA to mean or other estimated values, doing so may impact the accuracy of the analysis.NA in our case simply means data missing, unknown.
+
+```{r}
+row_nan_counts <-
+  apply(youtube_2023data, 1, function(row) {
+    sum(tolower(row) %in% tolower(c("NAN", "")) | is.na(row))
+  })
+rows_with_nan <- which(row_nan_counts > 0)
+sorted_row_nan_counts <- sort(row_nan_counts, decreasing = TRUE)
+print(sorted_row_nan_counts[0:200])
+print(length(rows_with_nan))
+
+column_nan_counts <-
+  sapply(youtube_2023data, function(col) {
+    sum(tolower(col) %in% tolower(c("NAN", "")) | is.na(col))
+  })
+columns_with_nan <- which(column_nan_counts > 0)
+sorted_column_nan_counts <-
+  sort(column_nan_counts, decreasing = TRUE)
+kable(sorted_column_nan_counts[0:10])
+print(length(columns_with_nan))
+```
+
+It's worth noting that columns 'Population', 'Unemployment.rate', 'Urban_population', 'Latitude', Longitude', "Abbreviation', have very approximate NA numbers as column 'Country'. To testify our thoughts, we count those columns' NA from the rows where 'Country' is NA. The result shows all of those columns are 122, the same as Country.   That makes sense because those columns are highly related to 'Country'; if Country is unknown, they should be unknown as well. The result kind of increases our confidence in the integrity of the data source.
+
+```{r}
+rows_Country_is_nan <-
+  youtube_2023data[tolower(youtube_2023data$Country) %in% tolower(c("NAN", "")),]
+columns_to_check <-
+  c(
+    "Gross.tertiary.education.enrollment.percentage",
+    "Population",
+    "Unemployment.rate",
+    "Urban_population",
+    "Latitude",
+    "Longitude",
+    "Abbreviation"
+  )
+rows_Country_is_nan_other_column_nan_stats <-
+  sapply(rows_Country_is_nan[, columns_to_check], function(col) {
+    sum(tolower(col) %in% tolower(c("NAN", "")) | is.na(col))
+  })
+kable(rows_Country_is_nan_other_column_nan_stats)
+```
+
+While going through the data, we can see there are 43 zeros in the column 'uploads'. We don't know the reasons behind the scenes: are the uploads deleted? Or are those channels blocked?  
+Basically, these are not normal data for top YouTubers. We should set them to NA to avoid further misinterpretation.  
+Similarly, the column 'video.views' is not supposed to be zero for top YouTubers; we manually set them to NA as well.
+
+```{r}
+nrow(youtube_2023data[youtube_2023data$uploads==0,])
+youtube_2023data$uploads <- ifelse(youtube_2023data$uploads==0, NA, youtube_2023data$uploads)
+
+nrow(youtube_2023data[youtube_2023data$video.views==0,])
+youtube_2023data$video.views <- ifelse(youtube_2023data$video.views==0, NA, youtube_2023data$video.views)
+
+```
+
+### The Shiny App
+
+For the columns with continuous values(most of the columns are storing continuous values), we provide this convenient Shiny App for users to inspect the data of their interests.  
+Initially, we developed 2 separate Shiny Apps, but later we merged them into a single one, with a selector to switch between them. A single Shiny App is more convenient as it provides abundant info in one place.  
+In the first Shiny App, the user can inspect the single variable distributions there. A histogram plot and a corresponding box plot are incorporated. The bin numbers can be adjusted to fine-tune the histogram plot, and the x-scale can be logarithmized to facilitate viewing data that expands at a big range.  
+The second Shiny App incorporates a scatter plot, of which both the x-axis and y-axis can be assigned a variable as you wish.<br> Both axes can be logarithmized to help inspect data over a large range. A trend curve is also provided.
+
+```{r}
+columns_continuous_interested <-
+  c(
+    "subscribers",
+    "video.views",
+    "uploads",
+    "video_views_for_the_last_30_days",
+    "lowest_monthly_earnings",
+    "highest_monthly_earnings",
+    "lowest_yearly_earnings",
+    "highest_yearly_earnings",
+    "subscribers_for_last_30_days",
+    "created_year",
+    "Gross.tertiary.education.enrollment.percentage",
+    "Population",
+    "Unemployment.rate",
+    "Urban_population"
+  )
+
+ui_one_var <- fluidPage(titlePanel("Data inspection"),
+                        sidebarLayout(
+                          sidebarPanel(
+                            selectInput("x_var", "Select variable to inspect:", choices = columns_continuous_interested),
+                            checkboxInput(
+                              inputId = "logarithmize_scale",
+                              label = strong("Logarithmize x scale"),
+                              value = FALSE
+                            ),
+                            sliderInput(
+                              "num_breaks",
+                              "Number of bins in histogram:",
+                              min = 10,
+                              max = 100,
+                              value = 30
+                            )
+                          ),
+                          mainPanel(plotOutput("inspection_plot"))
+                        ))
+
+server_one_var <- function(input, output) {
+  render_histogram <-
+    function(data,
+             x_var,
+             num_breaks,
+             logarithmize_scale) {
+      outPlot <- ggplot(data, aes_string(x = x_var)) +
+        geom_histogram(bins = num_breaks,
+                       fill = "blue",
+                       color = "black") +
+        scale_x_continuous(labels = scales::label_number_si()) +
+        labs(title = x_var, x = "", y = "")
+      if (logarithmize_scale) {
+        outPlot <- outPlot + scale_x_log10()
+      }
+      outPlot
+    }
+  
+  render_boxplot <- function (data, x_var, logarithmize_scale) {
+    outPlot <- ggplot(data) +
+      geom_boxplot(
+        aes_string(y = x_var),
+        outlier.colour = "red",
+        outlier.shape = 16,
+        outlier.size = 2,
+        notch = FALSE
+      ) +
+      scale_y_continuous(labels = scales::label_number_si()) +
+      labs(title = "", x = "", y = "")
+    if (logarithmize_scale) {
+      outPlot <- outPlot + scale_y_log10()
+    }
+    outPlot + coord_flip()
+  }
+  
+  output$inspection_plot <- renderPlot({
+    graph_left <-
+      render_histogram(youtube_2023data,
+                       input$x_var,
+                       input$num_breaks,
+                       input$logarithmize_scale)
+    graph_right <-
+      render_boxplot(youtube_2023data, input$x_var, input$logarithmize_scale)
+    grid.arrange(graph_left, graph_right, nrow = 2)
+  })
+}
+
+
+ui_two_vars <- fluidPage(
+  titlePanel("Data relationship inspection"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("y_var", "Select y variable:", choices = columns_continuous_interested),
+      checkboxInput(
+        inputId = "logarithmize_y_scale",
+        label = strong("Logarithmize y scale"),
+        value = FALSE
+      ),
+      selectInput("x_var", "Select x variable:", choices = columns_continuous_interested),
+      checkboxInput(
+        inputId = "logarithmize_x_scale",
+        label = strong("Logarithmize x scale"),
+        value = FALSE
+      ),
+      checkboxInput(
+        inputId = "show_trend_curve",
+        label = strong("Show trend curve"),
+        value = FALSE
+      ),
+    ),
+    mainPanel(plotOutput("inspection_plot"))
+  )
+)
+
+server_two_vars <- function(input, output) {
+  output$inspection_plot <- renderPlot({
+    outPlot <-
+      ggplot(data = youtube_2023data,
+             mapping = aes_string(x = input$x_var, y = input$y_var)) +
+      geom_point()
+    if (input$logarithmize_y_scale) {
+      outPlot <- outPlot + scale_y_log10()
+    }
+    if (input$logarithmize_x_scale) {
+      outPlot <- outPlot + scale_x_log10()
+    }
+    if (input$show_trend_curve) {
+      outPlot <- outPlot + geom_smooth()
+    }
+    outPlot
+  })
+}
+
+
+ui <- fluidPage(
+  tags$head(tags$style(
+    HTML(".container { max-height: 600px; overflow-y: hidden; }")
+  )),
+  HTML("<br>"),
+  selectInput(
+    "app_selector",
+    "Select App Set",
+    choices = c(
+      "Set 1 -- One variable plot" = "set1",
+      "Set 2 -- Two variables plot" = "set2"
+    )
+  ),
+  uiOutput("app_ui")
+)
+
+server <- function(input, output) {
+  output$app_ui <- renderUI({
+    if (input$app_selector == "set1") {
+      ui_one_var
+    } else {
+      ui_two_vars
+    }
+  })
+  
+  observe({
+    if (input$app_selector == "set1") {
+      server_one_var(input, output)
+    } else {
+      server_two_vars(input, output)
+    }
+  })
+}
+
+# Run the Shiny app
+shinyApp(ui, server, options = list(width = '100%', height = '600px'))
+
+```
+
+### Insights into the data
+
+There are some interesting stories behind the data, we will continue our steps to explore more of it.
+
+#### Category and country distributions
+
+The Shiny App has enormous info in it, however, it only covers continuous variables.
+There are some categorical columns worth noting as well, such as 'category' and 'Country'. We use Cleveland dot plot to display their distributions.  
+The plot 'Count by category' shows that the top 5 popular categories are 'Entertainment', 'Music', 'People & Blogs', 'Gaming', and 'Comedy', which accumulate to about 74% of the total.  
+Inspired by the figure, if you choose one of those category, you have a better chance to become a top YouTuber.  
+The plot 'Count by Country' shows the top 5 countries are 'United States', 'India', 'Brazil', 'United Kingdom', and 'Mexico', which add up to about 62% of the total.
+
+```{r}
+ClevelandDotPlot(youtube_2023data,
+                 "category",
+                 sort = 1,
+                 title = "Count by category") +
+  coord_flip()
+
+  print(sum(head(sort(
+    table(youtube_2023data$category), decreasing = TRUE
+  ), n = 5)) / nrow(youtube_2023data))
+
+ClevelandDotPlot(
+  youtube_2023data,
+  "Country",
+  limit_n = 10,
+  sort = 1,
+  title = "Count by Country"
+) +
+  coord_flip()
+
+top_5_countries <- head(sort(
+  table(youtube_2023data$Country[youtube_2023data$Country != 'nan']), decreasing = TRUE
+), n = 5)
+print(sum(top_5_countries) / nrow(youtube_2023data))
+```
+
+We can also employ a tile plot to visualize the relationship between categories and countries. We won't include all the countries, instead, only the top 5 countries are included.  
+The plot drawn is quite easy to figure out which category is popular in each country.
+For example, we can see 'Music', 'Entertainment', 'People & Blogs' are most popular in United States, while in India, the most welcome categories are 'Entertainment' and 'Music'.
+
+```{r}
+ggplot(data = count(youtube_2023data[youtube_2023data$Country%in%names(top_5_countries),], category, Country), mapping = aes(x =Country , 
+                                y = category)) +
+    geom_tile(mapping = aes(fill = n))
+```
+
+#### Created date distributions
+
+We also are curious about the distribution of 'created date'.  
+The plot shows scatter points are evenly distributed and the smooth line is nearly a horizontal line through rank=500, though the line is a bit rising along the 'created_full_date'.  
+The result indicates that old YouTubers have slight advantages, but generally speaking, if you are a newcomer, you still have an equal opportunity to become the top one.
+
+```{r, warning=FALSE, message=FALSE}
+ggplot(youtube_2023data, aes(x = as.Date(created_full_date), y = rank)) +
+  geom_point() + geom_smooth() +
+  scale_x_date(date_labels = "%Y-%m-%d", date_breaks = "1 year")+
+  labs(x = "created_full_date", y = "rank")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0)) 
+```
+
+#### For-profit and not-for-profit YouTubers
+
+Next, we will first separate the data source into two parts, one is for-profit part, the other is not-for-profit part, as we found some top YouTubers almost never made any money or made very little money.  
+We believe for top YouTubers with millions of subscribers, making some money is not a difficult thing. The only reasonable explanation is that they do not intend to make money through their channel. We set them apart to make the following analysis more reliable.  
+There is no absolute breaking point between 'for-profit' and 'not-for-profit', we just, from practical experience and estimation, define it to be 1000 in the column 'highest_yearly_earnings' --- greater than 1000 is 'for-profit'; less than 1000 is the opposite.  
+For the data set 'youtube_2023data_for_profit', we can view their created_full_date in descending order; the result shows the vast majority of them are old YouTubers, which solidifies our assumptions that they are truly not for profit.
+
+```{r, echo=TRUE, results='hide'}
+youtube_2023data_for_profit <- youtube_2023data[youtube_2023data$highest_yearly_earnings>1000,]
+youtube_2023data_not_for_profit <-  setdiff(youtube_2023data, youtube_2023data_for_profit)
+sort(youtube_2023data_not_for_profit$created_full_date, decreasing = TRUE )
+```
+
+#### Efforts behind the successful YouTubers
+
+As a common sense, we understand no one becomes successful easily, and to become the top YouTuber, considerable efforts are expected.To testify our thoughts, we will draw a scatter plot to unveil the relationship between uploads and income.  
+'Uploads' is a good indicator of effort levels, and 'Income' or money, although not necessarily equivalent to 'success', can be a valid measure or indicator.   
+Now, we will use the the data, 'youtube_2023data_for_profit', to analyze how the 'Uploads' affect the 'Money made'.  
+From the data source, four columns related to incomes are available, they are 'lowest_monthly_earnings', 'highest_monthly_earnings', 'lowest_yearly_earnings', 'highest_yearly_earnings'. We should combine these 4 columns together to analyze incomes vs. uploads.  
+As is expected, for the top 5 categories, the plots all show that the 'Money made' is positively related to 'Uploads'(The margin of the plot may show the opposite trend, but as the data samples are fewer in the margins, they should not be considered).
+So actively posting videos is a key to making more money.
+
+```{r , warning=FALSE, message=FALSE, fig.width = 12, fig.height=12}
+sorted_categories <-
+  names(sort(table(youtube_2023data_for_profit$category), decreasing = TRUE))
+
+ggplot(
+  data = subset(youtube_2023data_for_profit, category %in% sorted_categories[1:5]),
+  mapping = aes(x = uploads)
+) + labs(x = "Uploads", y = "Money made") + scale_x_log10() + scale_y_log10() +
+  geom_point(
+    mapping = aes(y = lowest_monthly_earnings, color = "lowest_monthly_earnings"),
+    size = 1
+  ) + geom_smooth(mapping = aes(y = lowest_monthly_earnings, color = "lowest_monthly_earnings")) +
+  geom_point(
+    mapping = aes(y = highest_monthly_earnings, color = "highest_monthly_earnings"),
+    size = 1
+  ) + geom_smooth(mapping = aes(y = highest_monthly_earnings, color = "highest_monthly_earnings")) +
+  geom_point(
+    mapping = aes(y = lowest_yearly_earnings, color = "lowest_yearly_earnings"),
+    size = 1
+  ) + geom_smooth(mapping = aes(y = lowest_yearly_earnings, color = "lowest_yearly_earnings")) +
+  geom_point(
+    mapping = aes(y = highest_yearly_earnings, color = "highest_yearly_earnings"),
+    size = 1
+  ) + geom_smooth(mapping = aes(y = highest_yearly_earnings, color = "highest_yearly_earnings")) +
+  scale_color_manual(
+    values = c(
+      "lowest_monthly_earnings" = "blue",
+      "highest_monthly_earnings" = "red",
+      "lowest_yearly_earnings" = "green",
+      "highest_yearly_earnings" = "yellow"
+    )
+  ) +  facet_wrap( ~ category)
+
+```
+
+Besides money, another key measure of success is 'Video viewed'.A high number of 'Video viewed' is an indication that your work influences many people, you're well-known or very popular.  
+This time, the full data source 'youtube_2023data' will be used.  
+Likewise, as the plots show, 'Video viewed' is positively related to 'Uploads', meaning the more you post, the more popular you get to be.
+
+```{r , warning=FALSE, message=FALSE, fig.width = 12, fig.height=12}
+ggplot(
+  data = subset(youtube_2023data, category %in% sorted_categories[1:5]),
+  mapping = aes(x = uploads)
+) + labs(x = "Uploads", y = "Video viewed") + scale_x_log10() + scale_y_log10() +
+  coord_cartesian(ylim = c(1e+9, 1e+11), xlim = c(1e+2,1e+5)) + #The scope is limited to the area with abundant data samples
+  geom_point(mapping = aes(y = video.views, color = "video.views"),
+             size = 1) + geom_smooth(mapping = aes(y = video.views, color = "video.views")) +
+  scale_color_manual(values = c("video.views" = "blue")) +  facet_wrap( ~ category)
+```
+
+#### The not-for-profit YouTubers
+
+For those top YouTubers who do not intend to make money, we are interested in where they come from and which categories they belong to.  
+The heatmap shows most of the not-for-profit YouTubers are from US and India, and concentrate on 'Comedy', 'Entertainment', 'Music' etc.  
+We also find that most of the not-for-profit YouTubers' countries are unknown as marked by 'nan'. They seem to be mysterious while showing little interest in money.
+
+```{r}
+ggplot(data = youtube_2023data_not_for_profit) +
+  geom_count(mapping = aes(x=Country, y=category))+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0)) 
+```
